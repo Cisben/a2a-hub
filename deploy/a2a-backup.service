@@ -1,0 +1,7 @@
+[Unit]
+Description=a2a-hub sqlite backup
+
+[Service]
+Type=oneshot
+User=user
+ExecStart=/home/user/web_try/a2a/backup.sh

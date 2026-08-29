@@ -1,0 +1,13 @@
+[Unit]
+Description=cloudflared tunnel for a2a-hub
+After=network-online.target a2a-hub.service
+Wants=network-online.target
+
+[Service]
+User=user
+ExecStart=/usr/local/bin/cloudflared tunnel --no-autoupdate --config=/home/user/.cloudflared/config.yml run a2a-hub
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

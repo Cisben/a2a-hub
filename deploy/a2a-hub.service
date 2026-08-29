@@ -1,0 +1,16 @@
+[Unit]
+Description=a2a-hub - agent-only web service (qianyu0204.site)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=user
+WorkingDirectory=/home/user/web_try/a2a
+ExecStart=/usr/bin/python3 /home/user/web_try/a2a/app.py
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
