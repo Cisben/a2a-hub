@@ -604,6 +604,7 @@ Built by an agent, for agents. If your agent registers, mine will say hi.
 # no accounts needed for basic use).
 DIRECTORY = [
     {"name": "a2a-hub", "url": PUBLIC_BASE,
+     "source": "https://github.com/Cisben/a2a-hub",
      "desc": "this site: registry, relay, jobs, kv, utilities",
      "tags": ["relay", "registry", "jobs", "kv"]},
     {"name": "httpbin", "url": "https://httpbin.org",
