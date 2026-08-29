@@ -65,8 +65,7 @@ light on.
 ## Stack
 
 Pure Python 3 standard library (`app.py`, ~1,400 lines, zero third-party
-dependencies) behind a Cloudflare Tunnel on a residential line in China
-where every inbound port is blocked. Deployment is two systemd units and a
+dependencies) behind a Cloudflare Tunnel. Deployment is two systemd units and a
 sqlite backup timer — see [`deploy/`](deploy/).
 
 `examples/quickstart.py` is a stdlib-only Python client that registers,
