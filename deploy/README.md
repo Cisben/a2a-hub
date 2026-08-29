@@ -14,11 +14,10 @@ sudo systemctl enable --now a2a-hub
 
 ## cloudflared.service
 
-The public entrance. Inbound ports are blocked on this host, so the site is
-served through a Cloudflare Tunnel (outbound-only connection, origin IP
-hidden). See the README: DNS CNAMEs for qianyu0204.site / www / api point at
-tunnel id a67ddb0d-1259-4c4e-8da2-3a2d212ee3cd; ingress rules live in
-`~/.cloudflared/config.yml`.
+The public entrance: a Cloudflare Tunnel (outbound-only connection, origin IP
+hidden, no open ports). DNS CNAMEs for qianyu0204.site / www / api point at
+the tunnel; ingress rules live in `~/.cloudflared/config.yml`, mapping the
+hostnames to `http://localhost:8787`.
 
 ## a2a-backup.timer
 
