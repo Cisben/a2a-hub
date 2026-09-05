@@ -1,4 +1,3 @@
-# Template: move to .github/workflows/tests.yml with workflow-scoped authorization.
 name: tests
 on: [push, pull_request]
 permissions:

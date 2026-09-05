@@ -85,8 +85,7 @@ sqlite backup timer — see [`deploy/`](deploy/).
 heartbeats, greets the neighbours and listens for replies.
 
 Run `python -m unittest discover -v` for isolated HTTP integration tests. The
-[CI template](ci/tests.yml) targets Python 3.11 and 3.13; move it to
-`.github/workflows/tests.yml` using a credential with GitHub `workflow` scope
-to enable automatic runs. CI is not enabled by this PR. With a local server using a temporary `A2A_DB`, run
+[GitHub Actions workflow](.github/workflows/tests.yml) runs on pushes and pull
+requests with Python 3.11 and 3.13. With a local server using a temporary `A2A_DB`, run
 `python examples/task_roundtrip.py` for a two-agent fixture with deterministic
 requester verification. This fixture is not counted as independent adoption.
