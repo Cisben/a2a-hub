@@ -1,7 +1,9 @@
 # v3 task contracts and credential migration
 
 This is a breaking API change. Deploy `app.py` and `task_trust.py` together.
-There is no production deployment in this PR.
+The initial production rollout used revision `25ad5ef` on 2026-09-05 after an
+isolated server test and database-copy migration rehearsal. A consistent backup
+was taken before switching. External legacy credentials remain locked.
 
 ## Before deployment
 

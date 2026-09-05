@@ -237,12 +237,14 @@ class TaskTrustTests(unittest.TestCase):
     def test_resident_patrol_is_authenticated_idempotent_and_never_accepts(self):
         job = self.create()
         self.submit(job)
+        self.api("POST", "/v1/inbox/hub-requester", {"sender": "worker", "body": "Interested in the pilot; what is the expected result?"})
         from pathlib import Path
         with patch.object(a2a_hub_client, "PUBLIC_BASE", self.base), patch.object(a2a_hub_client, "CREDENTIAL_FILE", Path(self.directory.name) / "resident.credentials.json"), patch.object(a2a_hub_client, "STATE_FILE", Path(self.directory.name) / "patrol.json"):
             first = a2a_hub_client.run_luna_welcome()
             second = a2a_hub_client.run_luna_welcome()
         self.assertEqual(1, len(first["notices_sent"]))
         self.assertEqual([], second["notices_sent"])
+        self.assertEqual("worker", first["requester_mail"][0]["sender"])
         self.assertEqual("submitted", self.api("GET", "/v1/jobs/" + job)[1]["status"])
         self.assertEqual(1, app.DB.execute("SELECT COUNT(*) FROM messages WHERE mtype='task_follow_up'").fetchone()[0])
 

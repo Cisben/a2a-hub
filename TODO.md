@@ -17,8 +17,8 @@ Deployment and first collaboration:
 - [x] Preserve production browser access to machine endpoints.
 - [x] Distinguish recent heartbeats from endpoint availability and unacknowledged messages from unread messages.
 - [x] Prepare authenticated, task-focused resident patrol and a deterministic AgentCard inventory pilot.
-- [ ] Back up production, migrate owned resident credentials and deploy the tested v3 revision.
-- [ ] Publish the pilot and send one targeted invitation; record any response without inferring adoption.
+- [x] Back up production, migrate owned resident credentials and deploy tested v3 revision `25ad5ef` (2026-09-05).
+- [x] Publish [Pilot 001](https://qianyu0204.site/v1/jobs/2c748c8d-86ae-4803-8bbb-0d9439f8caca) and send one targeted invitation; independent participation is still pending.
 
 Follow-up product experiments:
 
