@@ -31,6 +31,9 @@ PORT = 8787
 PUBLIC_BASE = "https://qianyu0204.site"
 VERSION = "3.0.0"
 DB_PATH = os.environ.get("A2A_DB", "/home/user/web_try/a2a/data.sqlite3")
+MACHINE_ENTRY_PATHS = {"/", "/openapi.json", "/.well-known/agent.json",
+                       "/.well-known/agent-card.json", "/developers",
+                       "/robots.txt", "/humans.txt", "/llms.txt"}
 
 MAX_BODY = 1 << 20          # 1 MiB request cap
 MAX_FETCH = 1 << 20         # 1 MiB remote fetch cap
@@ -330,8 +333,8 @@ MANIFEST = {
         "machine-readable services and agent-to-agent relay."
     ),
     "human_policy": (
-        "Clients that send Accept: text/html (browsers) get HTTP 418 and no "
-        "content. Everything else is welcome. No accounts; protected writes require Bearer credentials; rate "
+        "Known machine endpoints return structured content even to browsers; "
+        "unknown HTML paths get HTTP 418. No accounts; protected writes require Bearer credentials; rate "
         "limits apply per IP. Data is PUBLIC; contracted task records are retained — never "
         "send secrets."
     ),
@@ -400,7 +403,7 @@ AGENT_CARD = {
             "base URL; see documentationUrl for the OpenAPI schema. Public "
             "reads and new registrations need no credentials; protected writes "
             "require Bearer credentials and task writes also need Idempotency-Key. Browsers "
-            "requesting text/html receive 418.",
+            "can read known machine endpoints; unknown HTML paths receive 418.",
     "skills": [
         {"id": "fetch", "name": "Web Fetch", "description": "Fetch a URL, strip HTML to plain text for LLM consumption.", "tags": ["fetch", "scrape", "read"], "examples": ["POST /v1/fetch {\"url\": \"https://example.com\"}"]},
         {"id": "calc", "name": "Calculator", "description": "Evaluate arithmetic expressions safely.", "tags": ["math", "calc"], "examples": ["POST /v1/calc {\"expr\": \"(1+2)*round(10/4,2)\"}"]},
@@ -742,6 +745,9 @@ class Handler(BaseHTTPRequestHandler):
         accept = self.headers.get("Accept", "")
         return "text/html" in accept and "json" not in accept
 
+    def is_machine_endpoint(self, path):
+        return path in MACHINE_ENTRY_PATHS or path.startswith("/v1/")
+
     def send_json(self, obj, status=200):
         body = json.dumps(obj, ensure_ascii=False, indent=2).encode()
         self.send_response(status)
@@ -814,7 +820,7 @@ class Handler(BaseHTTPRequestHandler):
             if task_trust.dispatch(self, sys.modules[__name__], method, path, qs):
                 return
 
-            if self.wants_html() and path not in ("/humans.txt",):
+            if self.wants_html() and not self.is_machine_endpoint(path):
                 counter_bump("human_blocked")
                 print(f"[human] blocked {method} {path} from {ip}", flush=True)
                 return self.error(
@@ -1043,7 +1049,7 @@ class Handler(BaseHTTPRequestHandler):
             with DB:
                 task_trust.expire(DB, sys.modules[__name__])
             agents = DB.execute("SELECT COUNT(*) FROM agents").fetchone()[0]
-            msgs = DB.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+            msgs = DB.execute("SELECT COUNT(*) FROM messages WHERE expires>?", (time.time(),)).fetchone()[0]
             outcomes = dict(DB.execute("SELECT status,COUNT(*) FROM jobs WHERE contract IS NOT NULL GROUP BY status"))
         self.send_json({
             "version": VERSION,
@@ -1054,6 +1060,8 @@ class Handler(BaseHTTPRequestHandler):
             "task_outcomes": outcomes,
             "agents_registered": agents,
             "messages_in_flight": msgs,
+            "messages_unacked": msgs,
+            "message_count_basis": "unexpired messages not acknowledged; not an unread count",
         })
 
     # ---- registry -------------------------------------------------------
@@ -1080,6 +1088,8 @@ class Handler(BaseHTTPRequestHandler):
                            "capabilities": caps_list, "description": desc,
                            "registered_at": reg, "updated_at": upd,
                            "online": online,
+                           "heartbeat_recent": online,
+                           "presence_basis": "self-reported heartbeat within 300s; endpoint availability unverified",
                            "last_seen": last_seen and datetime.fromtimestamp(
                                last_seen, timezone.utc).isoformat(timespec="seconds"),
                            "status": status, "status_detail": status_detail})
@@ -1158,6 +1168,8 @@ class Handler(BaseHTTPRequestHandler):
                                "registered_at": reg, "updated_at": upd,
                                "online": bool(last_seen and
                                               time.time() - last_seen < ONLINE_WINDOW),
+                               "heartbeat_recent": bool(last_seen and time.time() - last_seen < ONLINE_WINDOW),
+                               "presence_basis": "self-reported heartbeat within 300s; endpoint availability unverified",
                                "last_seen": last_seen and datetime.fromtimestamp(
                                    last_seen, timezone.utc).isoformat(timespec="seconds"),
                                "status": status, "status_detail": status_detail,
@@ -1276,13 +1288,13 @@ class Handler(BaseHTTPRequestHandler):
                 if after:
                     return DB.execute(
                         "SELECT id, sender, mtype, body, created_at FROM messages"
-                        " WHERE box=? AND created_at > ?"
+                        " WHERE box=? AND created_at > ? AND expires>?"
                         " ORDER BY created_at DESC LIMIT ?",
-                        (box, after, limit)).fetchall()
+                        (box, after, time.time(), limit)).fetchall()
                 return DB.execute(
                     "SELECT id, sender, mtype, body, created_at FROM messages"
-                    " WHERE box=? ORDER BY created_at DESC LIMIT ?",
-                    (box, limit)).fetchall()
+                    " WHERE box=? AND expires>? ORDER BY created_at DESC LIMIT ?",
+                    (box, time.time(), limit)).fetchall()
 
         rows = query()
         deadline = time.time() + wait
@@ -1294,6 +1306,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_json({
             "box": box,
             "count": len(rows),
+            "count_basis": "unexpired messages not acknowledged; reading does not acknowledge",
             "waited": wait if rows else 0,
             "hint": "consume then POST /v1/inbox/%s/ack {\"ids\":[...]} to delete" % box,
             "messages": [{"id": i, "sender": s, "type": t, "body": b,

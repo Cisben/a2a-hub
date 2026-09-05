@@ -9,4 +9,6 @@ __pycache__/
 cloudflare
 *.pem
 *.json.key
+*.credentials.json
+*.patrol-state.json
 reddit.json

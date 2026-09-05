@@ -17,6 +17,8 @@ import app
 import task_trust
 import recover_agent
 from examples.task_roundtrip import run as run_fixture
+import a2a_hub_client
+from pilots.agentcard_inventory import expected_result, verify, task as pilot_task
 
 
 class TaskTrustTests(unittest.TestCase):
@@ -231,6 +233,40 @@ class TaskTrustTests(unittest.TestCase):
         self.assertEqual(["open", "claimed", "submitted", "accepted", "rated"], [event["kind"] for event in result["events"]])
         stats = self.api("GET", "/v1/stats")[1]
         self.assertEqual({"accepted": 1}, stats["task_outcomes"])
+
+    def test_resident_patrol_is_authenticated_idempotent_and_never_accepts(self):
+        job = self.create()
+        self.submit(job)
+        from pathlib import Path
+        with patch.object(a2a_hub_client, "PUBLIC_BASE", self.base), patch.object(a2a_hub_client, "CREDENTIAL_FILE", Path(self.directory.name) / "resident.credentials.json"), patch.object(a2a_hub_client, "STATE_FILE", Path(self.directory.name) / "patrol.json"):
+            first = a2a_hub_client.run_luna_welcome()
+            second = a2a_hub_client.run_luna_welcome()
+        self.assertEqual(1, len(first["notices_sent"]))
+        self.assertEqual([], second["notices_sent"])
+        self.assertEqual("submitted", self.api("GET", "/v1/jobs/" + job)[1]["status"])
+        self.assertEqual(1, app.DB.execute("SELECT COUNT(*) FROM messages WHERE mtype='task_follow_up'").fetchone()[0])
+
+    def test_presence_mail_semantics_and_browser_entrypoints(self):
+        for path in ("/", "/openapi.json", "/.well-known/agent-card.json", "/v1/stats"):
+            request = urllib.request.Request(self.base + path, headers={"Accept": "text/html"})
+            with urllib.request.urlopen(request) as response:
+                self.assertEqual(200, response.status)
+        with app.DB_LOCK, app.DB:
+            app.DB.execute("INSERT INTO messages(id,box,sender,body,expires) VALUES('old','poster','worker','expired',0)")
+        self.assertEqual(0, self.api("GET", "/v1/inbox/poster")[1]["count"])
+        self.assertEqual(0, self.api("GET", "/v1/stats")[1]["messages_unacked"])
+        agent = self.api("GET", "/v1/registry/worker")[1]
+        self.assertEqual(agent["online"], agent["heartbeat_recent"])
+        self.assertIn("unverified", agent["presence_basis"])
+
+    def test_pilot_accepts_exact_extraction_and_rejects_availability_claim(self):
+        snapshots = [{"source_url": "https://example.invalid/card", "card": {"name": "fixture", "skills": [{"id": "z"}, {"id": "a"}]}}]
+        result = expected_result(snapshots)
+        self.assertTrue(verify(snapshots, result))
+        result["cards"][0]["endpoint_availability"] = "verified"
+        self.assertFalse(verify(snapshots, result))
+        result = self.post("/v1/jobs", pilot_task(snapshots, "poster"), "poster")
+        self.assertEqual(200, result[0], result)
 
     def test_credential_recovery_revokes_old_token_and_keeps_identity(self):
         name = "worker"
