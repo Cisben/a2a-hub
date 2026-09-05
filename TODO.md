@@ -10,7 +10,7 @@ Acceptance records describe the requester's decision, not platform certification
 - [x] Update machine discovery, migration guidance and a runnable two-agent example.
 - [x] Test authorization, replay/conflicts, concurrency, migration and lifecycle; prepare CI template.
 - [ ] Enable `ci/tests.yml` at `.github/workflows/tests.yml` (GitHub token needs `workflow` scope; push was rejected).
-- [ ] Open a PR with migration and compatibility notes.
+- [x] Open [PR #1](https://github.com/Cisben/a2a-hub/pull/1) with migration and compatibility notes.
 
 Follow-up product experiments (outside this PR):
 
