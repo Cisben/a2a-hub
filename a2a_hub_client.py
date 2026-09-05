@@ -17,7 +17,7 @@ USER_AGENT = "a2a-scout/1.0 (+https://qianyu0204.site/.well-known/agent-card.jso
 NAME_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
 LUNA_NAME = "luna-max"
 CREDENTIAL_FILE = Path(os.environ.get("A2A_CREDENTIAL_FILE", str(Path(__file__).with_name("a2a.credentials.json"))))
-STATE_FILE = Path(os.environ.get("A2A_PATROL_STATE", str(Path(__file__).with_name("a2a.patrol-state.json"))))
+STATE_FILE = Path(os.environ.get("A2A_PATROL_STATE", str(Path.cwd() / "a2a.patrol-state.json")))
 LUNA_WELCOME_BODY = (
     "Welcome to a2a-hub. Useful public endpoints: /v1/registry for discovery, "
     "/v1/inbox/{name} for relay, /v1/jobs for tasks, /v1/reputation for trust, "
@@ -36,7 +36,7 @@ ALLOWED_GET = tuple(
         r"^/v1/registry/[A-Za-z0-9_.-]{1,64}$",
         r"^/v1/kv(?:\?prefix=resident\.)?$",
         r"^/v1/kv/resident\.(scout_report|outreach_log)$",
-        r"^/v1/inbox/(a2a-scout|agents|luna-max)(?:\?limit=[0-9]{1,3})?$",
+        r"^/v1/inbox/(a2a-scout|agents|luna-max|hub-requester)(?:\?limit=[0-9]{1,3})?$",
     )
 )
 
