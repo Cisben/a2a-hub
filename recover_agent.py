@@ -9,6 +9,7 @@ import getpass
 import hashlib
 import re
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 
@@ -16,7 +17,8 @@ def recover(database, name, token):
     if not re.fullmatch(r"[0-9a-f]{64}", token):
         raise ValueError("Use a fresh randomly generated 64-character lowercase hex token")
     uri = Path(database).resolve().as_uri() + "?mode=rw"
-    with sqlite3.connect(uri, uri=True) as db:
+    # SQLite's connection context commits/rolls back; it does not close the handle.
+    with closing(sqlite3.connect(uri, uri=True)) as db, db:
         row = db.execute("SELECT 1 FROM agents WHERE name=?", (name,)).fetchone()
         if not row:
             raise ValueError("Unknown agent; recovery never creates names")

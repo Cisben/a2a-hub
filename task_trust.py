@@ -23,6 +23,28 @@ def encoded(value):
     return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
 
 
+def idempotent(db, headers, method, path, body, actor, operation):
+    """Run a mutation and save its receipt atomically. Caller holds DB_LOCK.
+
+    Authenticate before this call. Keys share a namespace across protected
+    operations, preventing accidental reuse with a different URL or payload.
+    The operation must do database work only and must not commit on its own.
+    """
+    key = headers.get("Idempotency-Key", "")
+    if not re.fullmatch(r"[A-Za-z0-9_.:-]{1,128}", key):
+        raise Problem(400, "idempotency_key_required", "provide Idempotency-Key (1-128 safe ASCII characters)")
+    fingerprint = hashlib.sha256((method + " " + path + "\n" + encoded(body)).encode()).hexdigest()
+    with db:
+        receipt = db.execute("SELECT fingerprint,response FROM task_receipts WHERE actor=? AND key=?", (actor, key)).fetchone()
+        if receipt:
+            if receipt[0] != fingerprint:
+                raise Problem(409, "idempotency_conflict", "key already used with another path or body")
+            return json.loads(receipt[1])
+        response = operation()
+        db.execute("INSERT INTO task_receipts VALUES(?,?,?,?)", (actor, key, fingerprint, encoded(response)))
+        return response
+
+
 def init(db, add_col):
     add_col(db, "agents", "credential_version", "INTEGER NOT NULL DEFAULT 0")
     add_col(db, "jobs", "contract", "TEXT")
@@ -60,9 +82,12 @@ def event(db, hub, job_id, actor, kind, detail):
 
 
 def notify(db, hub, box, actor, kind, job_id):
-    db.execute("INSERT INTO messages(id,box,sender,mtype,body,created_at,expires) VALUES(?,?,?,?,?,?,?)",
+    # Task events persist; a full ephemeral inbox must not evict older messages.
+    if db.execute("SELECT COUNT(*) FROM messages WHERE box=? AND expires>?", (box, time.time())).fetchone()[0] >= hub.MAX_BOX_PENDING:
+        return
+    db.execute("INSERT INTO messages(id,box,sender,mtype,body,created_at,expires,conversation_id,job_id,sender_verified) VALUES(?,?,?,?,?,?,?,?,?,1)",
                (str(uuid.uuid4()), box, actor, kind, encoded({"job_id": job_id}),
-                hub.now_iso(), time.time() + hub.MSG_TTL_DEFAULT * 3600))
+                hub.now_iso(), time.time() + hub.MSG_TTL_DEFAULT * 3600, job_id, job_id))
 
 
 def expire(db, hub):
@@ -269,19 +294,8 @@ def dispatch(handler, hub, method, path, query):
                     raise Problem(400, "invalid_body", "JSON object required")
                 actor = body.get("poster" if path == "/v1/jobs" or path.endswith(("/accept", "/reject", "/rate")) else "worker")
                 authorize(hub.DB, handler.headers, actor)
-                key = handler.headers.get("Idempotency-Key", "")
-                if not re.fullmatch(r"[A-Za-z0-9_.:-]{1,128}", key):
-                    raise Problem(400, "idempotency_key_required", "provide Idempotency-Key (1-128 safe ASCII characters)")
-                fingerprint = hashlib.sha256((method + " " + path + "\n" + encoded(body)).encode()).hexdigest()
-                with hub.DB:
-                    receipt = hub.DB.execute("SELECT fingerprint,response FROM task_receipts WHERE actor=? AND key=?", (actor, key)).fetchone()
-                    if receipt:
-                        if receipt[0] != fingerprint:
-                            raise Problem(409, "idempotency_conflict", "key already used with another path or body")
-                        response = json.loads(receipt[1])
-                    else:
-                        response = mutate(hub.DB, hub, path, body, actor)
-                        hub.DB.execute("INSERT INTO task_receipts VALUES(?,?,?,?)", (actor, key, fingerprint, encoded(response)))
+                response = idempotent(hub.DB, handler.headers, method, path, body, actor,
+                                      lambda: mutate(hub.DB, hub, path, body, actor))
             else:
                 raise Problem(405, "method_not_allowed", "unsupported task operation")
         hub.notify_cond()
