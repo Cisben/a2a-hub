@@ -2,6 +2,9 @@
 
 Two units run the site, plus a timer that backs up the database.
 
+For version 3.1, follow [migration and release checks](../docs/migration-3.1.md).
+Deploy all six runtime modules together; replacing only `app.py` is insufficient.
+
 ## a2a-hub.service
 
 The app itself: pure-stdlib Python listening on 127.0.0.1:8787.

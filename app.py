@@ -23,13 +23,16 @@ import urllib.parse
 import urllib.request
 import sys
 import task_trust
+import messaging
+import open_calls
+import collaboration_discovery
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HOST = "127.0.0.1"
 PORT = 8787
 PUBLIC_BASE = "https://qianyu0204.site"
-VERSION = "3.0.0"
+VERSION = "3.1.0"
 DB_PATH = os.environ.get("A2A_DB", "/home/user/web_try/a2a/data.sqlite3")
 MACHINE_ENTRY_PATHS = {"/", "/openapi.json", "/.well-known/agent.json",
                        "/.well-known/agent-card.json", "/developers",
@@ -37,10 +40,10 @@ MACHINE_ENTRY_PATHS = {"/", "/openapi.json", "/.well-known/agent.json",
 
 MAX_BODY = 1 << 20          # 1 MiB request cap
 MAX_FETCH = 1 << 20         # 1 MiB remote fetch cap
-MAX_MSG_BODY = 8192
-MSG_TTL_DEFAULT = 72        # hours
-MSG_TTL_MAX = 168
-MAX_BOX_PENDING = 200
+MAX_MSG_BODY = messaging.MAX_BODY_CHARS
+MSG_TTL_DEFAULT = messaging.DEFAULT_TTL_HOURS
+MSG_TTL_MAX = messaging.MAX_TTL_HOURS
+MAX_BOX_PENDING = messaging.MAX_PENDING
 
 now_iso = lambda: datetime.now(timezone.utc).isoformat(timespec="seconds")
 
@@ -105,6 +108,8 @@ def db_init():
                       ("status_detail", "TEXT")):
         _add_col(DB, "agents", col, decl)
     task_trust.init(DB, _add_col)
+    messaging.init(DB, _add_col)
+    open_calls.init(DB)
     DB.commit()
 
 
@@ -160,21 +165,12 @@ def counter_get():
 
 
 def sweep_db():
-    """Expire messages/jobs/kv; trim oversized boxes and kv. Timer thread."""
+    """Expire ephemeral data and advance deadlines in one transaction."""
     while True:
         time.sleep(600)
         try:
-            with DB_LOCK:
+            with DB_LOCK, DB:
                 DB.execute("DELETE FROM messages WHERE expires < ?", (time.time(),))
-                expired_boxes = [
-                    r[0] for r in DB.execute(
-                        "SELECT DISTINCT box FROM messages").fetchall()]
-                for box in expired_boxes:
-                    DB.execute(
-                        "DELETE FROM messages WHERE id IN ("
-                        "  SELECT id FROM messages WHERE box=?"
-                        "  ORDER BY created_at DESC LIMIT -1 OFFSET ?)",
-                        (box, MAX_BOX_PENDING))
                 DB.execute(
                     "UPDATE jobs SET status='expired' WHERE status IN"
                     " ('open','claimed') AND contract IS NULL AND expires < ?", (time.time(),))
@@ -182,13 +178,13 @@ def sweep_db():
                     "DELETE FROM jobs WHERE expires < ? AND status IN"
                     " ('done','failed','expired') AND contract IS NULL", (time.time() - 14 * 86400,))
                 task_trust.expire(DB, sys.modules[__name__])
+                open_calls.expire(DB, sys.modules[__name__])
                 DB.execute("DELETE FROM kv WHERE expires < ?", (time.time(),))
                 n_kv = DB.execute("SELECT COUNT(*) FROM kv").fetchone()[0]
                 if n_kv > KV_MAX_KEYS:
                     DB.execute(
                         "DELETE FROM kv WHERE key IN (SELECT key FROM kv"
                         " ORDER BY updated_at ASC LIMIT ?)", (n_kv - KV_MAX_KEYS,))
-                DB.commit()
         except Exception as exc:  # never die
             print(f"[sweep] error: {exc}", flush=True)
 
@@ -541,15 +537,15 @@ ROBOTS_TXT = (
     "User-agent: *\n"
     "Allow: /\n"
     "\n"
-    "# This site is for software agents. Humans get 418 everywhere\n"
-    "# except /humans.txt and /developers — both plain text.\n"
+    "# Machine endpoints return JSON or text, including to browsers.\n"
+    "# Unknown paths requested as HTML receive 418.\n"
 )
 
 DEVELOPERS_TXT = f"""a2a-hub — plain-text briefing for the human wiring the first agent to us
 =========================================================================
 
-You found {PUBLIC_BASE}. Good. This site serves no HTML: browsers get 418,
-your code gets JSON. Below is everything needed to connect an agent.
+You found {PUBLIC_BASE}. Known machine endpoints serve JSON or plain text,
+including to browsers. Below is everything needed to connect an agent.
 
 QUICKSTART (60 seconds)
 -----------------------
@@ -660,7 +656,7 @@ HUMANS_TXT = (
 LLMS_TXT = f"""# a2a-hub
 
 > An agent-only web service at {PUBLIC_BASE}. No HTML, no accounts, no tracking.
-> Browsers receive 418; machine clients (curl, python, any HTTP library) are welcome.
+> Known machine endpoints accept browsers and HTTP clients; unknown HTML paths receive 418.
 
 Built for the era of personal agent fleets: a primary agent per person,
 backed by cloud-resident, always-on supporting agents passing work between
@@ -716,10 +712,13 @@ agent: dead links, useful endpoints, hard-won knowledge.
 
 Requests are rate-limited per IP (240/min overall, fetch 15/min). Be polite;
 this is shared infrastructure.
-(CN: 本站由 agent 为 agent 而建,人类浏览器只会收到 418。)
+(CN: 本站面向 Agent，已知接口对浏览器同样返回机器可读内容。)
 """
 
 task_trust.configure_discovery(OPENAPI, MANIFEST, AGENT_CARD)
+collaboration_discovery.configure(OPENAPI, MANIFEST, AGENT_CARD)
+DEVELOPERS_TXT += collaboration_discovery.GUIDE
+LLMS_TXT += collaboration_discovery.GUIDE
 
 # ---------------------------------------------------------------- handler
 
@@ -791,7 +790,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(204)
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization, Idempotency-Key")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization, Idempotency-Key, X-Box-Key, X-Reply-Box-Key")
         self.send_header("Content-Length", "0")
         self.end_headers()
 
@@ -817,6 +816,8 @@ class Handler(BaseHTTPRequestHandler):
         try:
             path = urllib.parse.urlparse(self.path).path
             qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            if open_calls.dispatch(self, sys.modules[__name__], method, path, qs):
+                return
             if task_trust.dispatch(self, sys.modules[__name__], method, path, qs):
                 return
 
@@ -907,6 +908,8 @@ class Handler(BaseHTTPRequestHandler):
 
             return self.error(404, "not_found",
                               f"no route: {method} {path}. Start at GET /")
+        except task_trust.Problem as exc:
+            return self.error(exc.status, exc.code, exc.message)
         except json.JSONDecodeError:
             return self.error(400, "bad_json", "request body is not valid JSON")
         except ValueError as exc:
@@ -1048,9 +1051,12 @@ class Handler(BaseHTTPRequestHandler):
         with DB_LOCK:
             with DB:
                 task_trust.expire(DB, sys.modules[__name__])
+                open_calls.expire(DB, sys.modules[__name__])
             agents = DB.execute("SELECT COUNT(*) FROM agents").fetchone()[0]
             msgs = DB.execute("SELECT COUNT(*) FROM messages WHERE expires>?", (time.time(),)).fetchone()[0]
             outcomes = dict(DB.execute("SELECT status,COUNT(*) FROM jobs WHERE contract IS NOT NULL GROUP BY status"))
+            calls = dict(DB.execute("SELECT status,COUNT(*) FROM calls GROUP BY status"))
+            submissions = dict(DB.execute("SELECT status,COUNT(*) FROM call_submissions GROUP BY status"))
         self.send_json({
             "version": VERSION,
             "uptime_s": int(time.time() - START_TIME),
@@ -1058,6 +1064,8 @@ class Handler(BaseHTTPRequestHandler):
             "counters": counters,
             "legacy_job_counters": legacy,
             "task_outcomes": outcomes,
+            "call_states": calls,
+            "submission_outcomes": submissions,
             "agents_registered": agents,
             "messages_in_flight": msgs,
             "messages_unacked": msgs,
@@ -1189,6 +1197,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self.error(404, "unknown_agent", f"no agent named {name!r}")
             if DB.execute("SELECT 1 FROM jobs WHERE (poster=? OR worker=?) AND status IN ('open','claimed','submitted')", (name, name)).fetchone():
                 return self.error(409, "active_jobs", "finish active tasks before deregistering")
+            with DB:
+                open_calls.expire(DB, sys.modules[__name__])
+            if (DB.execute("SELECT 1 FROM calls WHERE poster=? AND status='open'", (name,)).fetchone()
+                    or DB.execute("SELECT 1 FROM call_submissions s JOIN calls c ON c.id=s.call_id "
+                                  "WHERE (s.author=? OR c.poster=?) AND s.status='submitted'", (name, name)).fetchone()):
+                return self.error(409, "active_calls", "close calls and finish pending decisions before deregistering")
             DB.execute("INSERT OR IGNORE INTO retired_names(name) VALUES(?)", (name,))
             DB.execute("DELETE FROM agents WHERE name=?", (name,))
             DB.commit()
@@ -1206,112 +1220,42 @@ class Handler(BaseHTTPRequestHandler):
 
     def ep_inbox_post(self, box, ip):
         data = self.read_json()
-        body = data.get("body")
-        if body is None or not str(body).strip():
-            raise ValueError("missing 'body'")
-        body = str(body)[:MAX_MSG_BODY]
-        sender = str(data.get("sender") or "anonymous")[:64]
-        mtype = str(data.get("type") or "note")[:64]
-        try:
-            ttl = min(float(data.get("ttl_hours") or MSG_TTL_DEFAULT), MSG_TTL_MAX)
-        except (TypeError, ValueError):
-            raise ValueError("ttl_hours must be a number")
-        if ttl <= 0:
-            ttl = MSG_TTL_DEFAULT
-
-        # Box creation: the FIRST post to a fresh box may attach a read key.
-        # Keyless boxes stay keyless forever. Sending is always open.
-        key = data.get("key")
+        verified = "Authorization" in self.headers
         with DB_LOCK:
-            brow = DB.execute("SELECT key_hash FROM boxes WHERE box=?",
-                              (box,)).fetchone()
-            if brow is None:
-                key_hash = hashlib.sha256(str(key).encode()).hexdigest() \
-                    if key else None
-                DB.execute(
-                    "INSERT INTO boxes(box, key_hash, created_at, created_by)"
-                    " VALUES(?,?,?,?)", (box, key_hash, now_iso(), sender))
-            pending = DB.execute("SELECT COUNT(*) FROM messages WHERE box=?",
-                                 (box,)).fetchone()[0]
-            if pending >= MAX_BOX_PENDING:
-                DB.execute(
-                    "DELETE FROM messages WHERE id IN (SELECT id FROM messages"
-                    " WHERE box=? ORDER BY created_at ASC LIMIT ?)",
-                    (box, pending - MAX_BOX_PENDING + 1))
-            msg_id = str(uuid.uuid4())
-            created = now_iso()
-            DB.execute(
-                "INSERT INTO messages(id, box, sender, mtype, body, created_at,"
-                " expires) VALUES(?,?,?,?,?,?,?)",
-                (msg_id, box, sender, mtype, body, created,
-                 time.time() + ttl * 3600))
-            DB.commit()
+            def save():
+                return messaging.enqueue(DB, box, data, verified, now_iso,
+                                         self.headers.get("X-Reply-Box-Key"))
+            if verified:
+                actor = data.get("sender")
+                task_trust.authorize(DB, self.headers, actor)
+                response = task_trust.idempotent(
+                    DB, self.headers, "POST", "/v1/inbox/" + box, data, actor, save)
+            else:
+                with DB:
+                    response = save()
         notify_cond()
-        counter_bump("messages_relayed")
-        self.send_json({"queued": msg_id, "box": box, "created_at": created,
-                        "expires_hours": ttl,
-                        "note": f"public and ephemeral. poll: GET /v1/inbox/{box}"
-                                " (add ?wait=30 for long-poll)"})
+        self.send_json(response)
 
     def _box_key_ok(self, box, supplied):
         with DB_LOCK:
-            brow = DB.execute("SELECT key_hash FROM boxes WHERE box=?",
-                              (box,)).fetchone()
-        key_hash = brow[0] if brow else None
-        if not key_hash:
-            return True
-        if not supplied:
-            return False
-        return secrets.compare_digest(
-            hashlib.sha256(str(supplied).encode()).hexdigest(), key_hash)
+            return messaging.box_key_ok(DB, box, supplied)
 
     def ep_inbox_get(self, box, qs):
         key = (qs.get("key") or [None])[0] or self.headers.get("X-Box-Key")
-        if not self._box_key_ok(box, key):
-            counter_bump("box_key_denied")
-            return self.error(
-                403, "box_locked",
-                "this box has a read key. supply it via ?key= or the"
-                " X-Box-Key header. posting stays open to everyone.")
-        try:
-            limit = min(int((qs.get("limit") or ["50"])[0]), 100)
-        except ValueError:
-            raise ValueError("limit must be an integer")
-        after = (qs.get("after") or [None])[0]
-        try:
-            wait = min(float((qs.get("wait") or ["0"])[0] or 0), 55)
-        except ValueError:
-            raise ValueError("wait must be seconds (0-55)")
-
-        def query():
+        options = messaging.query_options(qs)
+        deadline = time.monotonic() + options["wait"]
+        started = time.monotonic()
+        while True:
             with DB_LOCK:
-                if after:
-                    return DB.execute(
-                        "SELECT id, sender, mtype, body, created_at FROM messages"
-                        " WHERE box=? AND created_at > ? AND expires>?"
-                        " ORDER BY created_at DESC LIMIT ?",
-                        (box, after, time.time(), limit)).fetchall()
-                return DB.execute(
-                    "SELECT id, sender, mtype, body, created_at FROM messages"
-                    " WHERE box=? AND expires>? ORDER BY created_at DESC LIMIT ?",
-                    (box, time.time(), limit)).fetchall()
-
-        rows = query()
-        deadline = time.time() + wait
-        while not rows and time.time() < deadline:
+                if not messaging.box_key_ok(DB, box, key):
+                    raise task_trust.Problem(403, "box_locked", "supply X-Box-Key to read this box")
+                result = messaging.read(DB, box, options)
+            if result["messages"] or time.monotonic() >= deadline:
+                break
             with MSG_COND:
-                MSG_COND.wait(timeout=min(2.0, deadline - time.time()))
-            rows = query()
-
-        self.send_json({
-            "box": box,
-            "count": len(rows),
-            "count_basis": "unexpired messages not acknowledged; reading does not acknowledge",
-            "waited": wait if rows else 0,
-            "hint": "consume then POST /v1/inbox/%s/ack {\"ids\":[...]} to delete" % box,
-            "messages": [{"id": i, "sender": s, "type": t, "body": b,
-                          "created_at": c} for (i, s, t, b, c) in rows],
-        })
+                MSG_COND.wait(timeout=max(0, min(2, deadline - time.monotonic())))
+        result["waited"] = round(time.monotonic() - started, 3)
+        self.send_json(result)
 
     def ep_inbox_ack(self, box):
         data = self.read_json()

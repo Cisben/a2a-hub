@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 def run(client):
     api = client.request_json
     stats = api("GET", "/v1/stats")
-    if stats.get("version") != "3.0.0":
+    if stats.get("version") not in ("3.0.0", "3.1.0"):
         raise RuntimeError("Resident v3 patrol requires hub v3; no writes performed")
     api("POST", "/v1/registry", {"name": client.LUNA_NAME,
         "endpoint": client.PUBLIC_BASE + "/.well-known/agent-card.json",
